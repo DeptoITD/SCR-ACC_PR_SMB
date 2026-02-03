@@ -28,8 +28,6 @@ _log_line() {
   printf "%s\n" "$line" >> "${LOG_FILE}"
 
   # a consola (según modo)
-  # - compact: INFO resumido, WARN/ERROR siempre
-  # - verbose: todo
   case "${CONSOLE_MODE}" in
     verbose)
       printf "%s\n" "$line"
@@ -38,8 +36,6 @@ _log_line() {
       if [[ "$level" == "ERROR" || "$level" == "WARN" || "$level" == "OK" ]]; then
         printf "%s\n" "$line"
       else
-        # INFO en compact solo si trae icono o es resumen útil
-        # (tú puedes ajustar esto si quieres aún menos)
         printf "%s\n" "$line"
       fi
       ;;
@@ -70,7 +66,6 @@ trim() {
 }
 
 run_cmd() {
-  # Loguea el comando. En DRY_RUN no ejecuta.
   log_info "🧾 [CMD] $*"
   if [[ "${DRY_RUN}" == "1" ]]; then
     return 0
@@ -245,7 +240,7 @@ shopt -u nullglob
 log_info "📁 Proyectos encontrados: ${#PROJECT_PATHS[@]}"
 log_info "👥 Perfiles encontrados: ${#PROFILES[@]}"
 
-# Contadores para resumen (para que no “adivines” si funcionó)
+# Contadores para resumen
 APPLIED=0
 SKIPPED_NO_WIP=0
 SKIPPED_NO_SP=0
@@ -280,24 +275,24 @@ for profile in "${PROFILES[@]}"; do
 
     # base_project
     apply_acl_one "$subject" "$local_base_project" "$proj_path" "false"
-    ((APPLIED++))
+    ((++APPLIED))
     log_ok "📍 base_project: ${profile} ${local_base_project} ${proj_path}"
 
     wip_path="${proj_path}/${WIP_FOLDER}"
     if [[ ! -d "$wip_path" ]]; then
-      ((SKIPPED_NO_WIP++))
+      ((++SKIPPED_NO_WIP))
       log_warn "📁 WIP no existe (se omite): ${wip_path}"
       continue
     fi
 
     # base_wip
     apply_acl_one "$subject" "$local_base_wip" "$wip_path" "false"
-    ((APPLIED++))
+    ((++APPLIED))
     log_ok "🧷 base_wip: ${profile} ${local_base_wip} ${wip_path}"
 
     if [[ -n "$local_wip_full" ]]; then
       apply_acl_one "$subject" "$local_wip_full" "$wip_path" "true"
-      ((APPLIED++))
+      ((++APPLIED))
       log_ok "🔓 wip_full_control: ${profile} ${local_wip_full} ${wip_path} (recursivo)"
       continue
     fi
@@ -305,18 +300,18 @@ for profile in "${PROFILES[@]}"; do
     for sp in "${SPECIALTIES[@]}"; do
       sp_path="${wip_path}/${sp}"
       if [[ ! -e "$sp_path" ]]; then
-        ((SKIPPED_NO_SP++))
+        ((++SKIPPED_NO_SP))
         continue
       fi
 
       if [[ "${is_write[$sp]+x}" ]]; then
         apply_acl_one "$subject" "rwx" "$sp_path" "true"
-        ((APPLIED++))
+        ((++APPLIED))
         log_ok "✍️ WRITE: ${profile} rwx ${sp_path}"
       else
         if [[ "$local_read" == "ALL_EXCEPT_WRITE" ]]; then
           apply_acl_one "$subject" "r-x" "$sp_path" "true"
-          ((APPLIED++))
+          ((++APPLIED))
           log_ok "👀 READ: ${profile} r-x ${sp_path}"
         fi
       fi
