@@ -1,0 +1,77 @@
+; Reglas de permisos por perfil para /srv/samba/02_Proyectos/<PROYECTO>/01_WIP/<ESPECIALIDAD>
+
+[GLOBAL]
+root=/srv/samba/02_Proyectos
+project_glob=*
+wip_folder=01_WIP
+base_project=rx
+base_wip=rx
+
+; =========================
+; PERFIL: IND_A (Arquitectura)
+; Edición: A_ARQ, O_LEV, YAC_ACU, YPA_PAT, YPM_PTR, YSE_SEN, YSH_SGH
+; =========================
+[IND_A]
+base_project=rx
+base_wip=rx
+write=A_ARQ,O_LEV,YAC_ACU,YPA_PAT,YPM_PTR,YSE_SEN,YSH_SGH
+read=ALL_EXCEPT_WRITE
+
+; =========================
+; PERFIL: IND_B (BIM)
+; Edición: TODAS LAS CARPETAS del WIP del proyecto
+; =========================
+[IND_B]
+base_project=rx
+wip_full_control=rwx
+
+; =========================
+; PERFIL: IND_E (Estructura)
+; Edición: E_EST, O_LEV
+; =========================
+[IND_E]
+base_project=rx
+base_wip=rx
+write=E_EST,O_LEV
+read=ALL_EXCEPT_WRITE
+
+; =========================
+; PERFIL: IND_YTP (Geotecnia)
+; Edición: YTP_TOP, A_ARQ, O_LEV, YAC_ACU, YPA_PAT, YPM_PTR, YSE_SEN, YSH_SGH, E_EST
+; =========================
+[IND_YTP]
+base_project=rx
+base_wip=rx
+write=YTP_TOP,A_ARQ,O_LEV,YAC_ACU,YPA_PAT,YPM_PTR,YSE_SEN,YSH_SGH,E_EST
+read=ALL_EXCEPT_WRITE
+
+; =========================
+; Catálogo de especialidades
+; =========================
+[SPECIALTIES]
+A_ARQ
+B_BIM
+D_DET
+E_EST
+F_PCI
+F_RCI
+G_GEN
+G_PMO
+H_HID
+I_GAS
+L_ELE
+M_MEC
+O_LEV
+R_REC
+T_TEL
+YAC_ACU
+YBI_BIO
+YGE_GEO
+YIL_ILU
+YPA_PAT
+YPM_PTR
+YSC_SyC
+YTP_TOP
+YVU_VUL
+YSE_SEN
+YSH_SGH

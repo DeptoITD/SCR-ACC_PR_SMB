@@ -2,7 +2,12 @@
 set -euo pipefail
 
 # scripts/validate.sh
-# Valida que existan rutas y usuarios antes de aplicar ACLs.
+# Validación ligera previa a aplicar ACLs.
+#
+# Diseño intencional:
+# - NO falla por proyectos inexistentes (pueden existir en otras máquinas).
+# - NO falla por usuarios/grupos no resueltos localmente (pueden venir de AD/LDAP/Samba).
+# - Sí falla si BASE no existe, porque ahí no hay nada que hacer.
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -11,32 +16,25 @@ source "${REPO_DIR}/config/projects.conf"
 # shellcheck source=/dev/null
 source "${REPO_DIR}/config/users.conf"
 
-fail=0
-
 echo "[VALIDATE] BASE: ${BASE}"
 
-if [[ ! -d "${BASE}" ]]; then
-  echo "[ERROR] BASE no existe: ${BASE}"
+if [[ -z "${BASE:-}" || ! -d "${BASE}" ]]; then
+  echo "[ERROR] BASE no existe o no es directorio: ${BASE}"
   exit 1
 fi
 
+# Proyectos: solo advertencia
 for p in "${PROJECTS[@]}"; do
   if [[ ! -d "${BASE}/${p}" ]]; then
-    echo "[ERROR] Proyecto no existe: ${BASE}/${p}"
-    fail=1
+    echo "[WARN] Proyecto no existe (se omitirá en iteraciones): ${BASE}/${p}"
   fi
 done
 
+# Usuarios/Grupos: solo advertencia (pueden venir de AD/LDAP/Samba)
 for u in "${ACL_USERS[@]}"; do
-  if ! id "${u}" &>/dev/null; then
-    echo "[ERROR] Usuario no existe en el sistema: ${u}"
-    fail=1
+  if ! getent passwd "${u}" >/dev/null 2>&1 && ! getent group "${u}" >/dev/null 2>&1; then
+    echo "[WARN] Usuario/Grupo no resuelto por getent (puede ser normal en Samba/AD): ${u}"
   fi
 done
 
-if [[ "${fail}" -ne 0 ]]; then
-  echo "[FAIL] Validación falló. No se aplican permisos."
-  exit 2
-fi
-
-echo "[OK] Validación completada."
+echo "[OK] Validación completada (warnings no bloquean ejecución)."

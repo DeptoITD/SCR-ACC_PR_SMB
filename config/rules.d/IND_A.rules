@@ -1,8 +1,0 @@
-# config/rules.d/IND_A.rules
-# Formato: <usuario>;<permisos>;<ruta_relativa>;<recursivo>
-# Nota: ruta_relativa es relativa a BASE (/srv/samba/02_Proyectos)
-
-IND_A;rx;1288_UDQ;false
-IND_A;rx;1288_UDQ/01_WIP;false
-IND_A;rwx;1288_UDQ/01_WIP/A_ARQ;true
-IND_A;r-x;1288_UDQ/01_WIP/B_BIM;true
