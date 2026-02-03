@@ -58,7 +58,7 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
   if [[ "$line" =~ ^\[(.+)\]$ ]]; then
     section="${BASH_REMATCH[1]}"
     if [[ "$section" != "GLOBAL" && "$section" != "SPECIALTIES" ]]; then
-      ((profiles_count++))
+      ((profiles_count+=1))
     fi
     continue
   fi
@@ -86,7 +86,7 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
     item="${line%%;*}"
     item="${item#"${item%%[![:space:]]*}"}"
     item="${item%"${item##*[![:space:]]}"}"
-    [[ -n "$item" ]] && ((specialties_count++))
+    [[ -n "$item" ]] && ((specialties_count+=1))
   fi
 done < "$INI_FILE"
 
