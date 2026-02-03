@@ -11,13 +11,57 @@ mkdir -p "${LOG_DIR}"
 
 DRY_RUN="${DRY_RUN:-0}"
 DEFAULT_ON_NONRECURSIVE_DIRS="${DEFAULT_ON_NONRECURSIVE_DIRS:-1}"
-
-# Logging behavior
 CONSOLE_MODE="${CONSOLE_MODE:-compact}"  # compact | verbose
-LOG_CMD="${LOG_CMD:-1}"                  # 1 => guarda comandos en log
-LOG_CMD_OUT="${LOG_CMD_OUT:-1}"          # 1 => stdout/stderr de comandos al log (modo real)
 
+# -------------------------
+# Logging (SIN pipes/tee)
+# -------------------------
 ts() { date -Is; }
+
+_log_line() {
+  # $1=LEVEL, $2=MSG
+  local level="$1"
+  local msg="$2"
+  local line="[$level] $(ts) $msg"
+
+  # siempre al archivo
+  printf "%s\n" "$line" >> "${LOG_FILE}"
+
+  # a consola (según modo)
+  # - compact: INFO resumido, WARN/ERROR siempre
+  # - verbose: todo
+  case "${CONSOLE_MODE}" in
+    verbose)
+      printf "%s\n" "$line"
+      ;;
+    compact)
+      if [[ "$level" == "ERROR" || "$level" == "WARN" || "$level" == "OK" ]]; then
+        printf "%s\n" "$line"
+      else
+        # INFO en compact solo si trae icono o es resumen útil
+        # (tú puedes ajustar esto si quieres aún menos)
+        printf "%s\n" "$line"
+      fi
+      ;;
+    *)
+      printf "%s\n" "$line"
+      ;;
+  esac
+}
+
+log_info() { _log_line "INFO"  "ℹ️  $*"; }
+log_warn() { _log_line "WARN"  "⚠️  $*"; }
+log_err()  { _log_line "ERROR" "❌ $*"; }
+log_ok()   { _log_line "OK"    "✅ $*"; }
+
+die() { log_err "$*"; exit 1; }
+
+# Trap para saber EXACTAMENTE dónde revienta
+trap 'rc=$?; log_err "💥 Abortado (exit=$rc) en línea ${LINENO}: ${BASH_COMMAND}"; exit $rc' ERR
+
+# -------------------------
+# Helpers
+# -------------------------
 trim() {
   local s="$1"
   s="${s#"${s%%[![:space:]]*}"}"
@@ -25,60 +69,16 @@ trim() {
   printf "%s" "$s"
 }
 
-# -------------------------
-# Logging (consola limpia + log detallado)
-# -------------------------
-log_file() {
-  local level="$1"; shift
-  echo "[$level] $(ts) $*" >> "${LOG_FILE}"
-}
-
-log_console() {
-  local level="$1"; shift
-
-  if [[ "${CONSOLE_MODE}" == "verbose" ]]; then
-    echo "[$level] $(ts) $*"
-    return 0
-  fi
-
-  # compact: solo INFO/WARN/ERROR/OK "humanamente útiles"
-  case "$level" in
-    ERROR|WARN|OK|INFO) echo "[$level] $(ts) $*" ;;
-    *) : ;;
-  esac
-}
-
-log_info(){ log_file "INFO" "ℹ️  $*"; log_console "INFO" "ℹ️  $*"; }
-log_warn(){ log_file "WARN" "⚠️  $*"; log_console "WARN" "⚠️  $*"; }
-log_err(){  log_file "ERROR" "🛑 $*"; log_console "ERROR" "🛑 $*"; }
-log_ok(){   log_file "OK" "✅ $*"; log_console "OK" "✅ $*"; }
-
-die(){ log_err "$*"; exit 1; }
-
-# -------------------------
-# run_cmd: NO ensucia consola, pero deja rastro completo en LOG
-# -------------------------
 run_cmd() {
-  if [[ "${LOG_CMD}" == "1" ]]; then
-    log_file "INFO" "🧾 [CMD] $*"
-  fi
-
+  # Loguea el comando. En DRY_RUN no ejecuta.
+  log_info "🧾 [CMD] $*"
   if [[ "${DRY_RUN}" == "1" ]]; then
-    # En DRY-RUN: no ejecutar. El comando queda registrado en el log.
     return 0
   fi
-
-  # Ejecución real
-  if [[ "${LOG_CMD_OUT}" == "1" ]]; then
-    "$@" >> "${LOG_FILE}" 2>&1
-  else
-    "$@"
-  fi
+  "$@"
 }
 
-# -------------------------
-# Subject u: vs g:
-# -------------------------
+# --- u: vs g: ---
 resolve_acl_subject() {
   local raw="$1"
   local kind="u"
@@ -92,33 +92,25 @@ resolve_acl_subject() {
     return 0
   fi
 
-  # Si existe como grupo, preferimos grupo (común en perfiles)
+  # Si existe como grupo, preferimos grupo
   if getent group "$raw" >/dev/null 2>&1; then
     kind="g"
   elif getent passwd "$raw" >/dev/null 2>&1; then
     kind="u"
   else
-    # fallback: u (para no bloquear; Samba/LDAP/AD podrían resolver)
+    # fallback: usuario
     kind="u"
   fi
 
   printf "%s:%s" "$kind" "$raw"
 }
 
-# Counters
-APPLIED=0
-SKIPPED_NO_WIP=0
-SKIPPED_NO_PATH=0
-WARNINGS=0
-PROJECTS_TOTAL=0
-
 warn_if_unknown_subject() {
   local raw="$1"
   local subj="$2"
   local name="${subj#*:}"
   if ! getent passwd "${name}" >/dev/null 2>&1 && ! getent group "${name}" >/dev/null 2>&1; then
-    ((WARNINGS++))
-    log_warn "Usuario/Grupo '${raw}' no existe en el sistema (getent). Se intentará aplicar igual (Samba/LDAP/AD podrían resolverlo)."
+    log_warn "👤 '${raw}' no existe en getent (se intentará igual: Samba/LDAP/AD podrían resolverlo)."
   fi
 }
 
@@ -140,12 +132,10 @@ apply_acl_one() {
       run_cmd setfacl -d -m "${kind}:${name}:${perms}" "${abs_path}"
     fi
   fi
-
-  ((APPLIED++))
 }
 
 # -------------------------
-# Parse INI (simple)
+# Parse INI
 # -------------------------
 declare -A GLOBAL
 declare -a SPECIALTIES
@@ -190,11 +180,11 @@ parse_ini() {
         GLOBAL["$key"]="$val"
       else
         case "$key" in
-          base_project)      PROFILE_base_project["$section"]="$val" ;;
-          base_wip)          PROFILE_base_wip["$section"]="$val" ;;
-          wip_full_control)  PROFILE_wip_full_control["$section"]="$val" ;;
-          write)             PROFILE_write["$section"]="$val" ;;
-          read)              PROFILE_read["$section"]="$val" ;;
+          base_project) PROFILE_base_project["$section"]="$val" ;;
+          base_wip) PROFILE_base_wip["$section"]="$val" ;;
+          wip_full_control) PROFILE_wip_full_control["$section"]="$val" ;;
+          write) PROFILE_write["$section"]="$val" ;;
+          read) PROFILE_read["$section"]="$val" ;;
           *) : ;;
         esac
       fi
@@ -217,6 +207,10 @@ split_csv() {
 # -------------------------
 log_info "🚀 Iniciando apply_acls (DRY_RUN=${DRY_RUN}) INI=${INI_FILE} CONSOLE_MODE=${CONSOLE_MODE}"
 
+# Validaciones básicas
+command -v setfacl >/dev/null 2>&1 || die "setfacl no está instalado o no está en PATH"
+command -v getent  >/dev/null 2>&1 || die "getent no está disponible (paquete libc-bin / glibc tools)"
+
 parse_ini
 
 ROOT="${GLOBAL[root]:-}"
@@ -227,7 +221,7 @@ WIP_FOLDER="${GLOBAL[wip_folder]:-01_WIP}"
 [[ -d "${ROOT}" ]] || die "ROOT no existe o no es directorio: ${ROOT}"
 [[ "${#SPECIALTIES[@]}" -gt 0 ]] || die "No hay SPECIALTIES en el INI"
 
-# Perfiles detectados
+# Detectar perfiles
 declare -a PROFILES
 for p in \
   "${!PROFILE_base_project[@]}" \
@@ -241,19 +235,20 @@ done
 mapfile -t PROFILES < <(printf "%s\n" "${PROFILES[@]}" | awk '!seen[$0]++' | sort)
 [[ "${#PROFILES[@]}" -gt 0 ]] || die "No hay perfiles en el INI (secciones tipo [IND_*])"
 
-# Proyectos existentes
+# Expandir proyectos existentes
 shopt -s nullglob
 # shellcheck disable=SC2206
 PROJECT_PATHS=( ${ROOT}/${PROJECT_GLOB} )
 shopt -u nullglob
+[[ "${#PROJECT_PATHS[@]}" -gt 0 ]] || die "No hay proyectos que matcheen: ${ROOT}/${PROJECT_GLOB}"
 
-if [[ "${#PROJECT_PATHS[@]}" -eq 0 ]]; then
-  die "No hay proyectos que matcheen: ${ROOT}/${PROJECT_GLOB}"
-fi
-
-PROJECTS_TOTAL="${#PROJECT_PATHS[@]}"
-log_info "📁 Proyectos encontrados: ${PROJECTS_TOTAL}"
+log_info "📁 Proyectos encontrados: ${#PROJECT_PATHS[@]}"
 log_info "👥 Perfiles encontrados: ${#PROFILES[@]}"
+
+# Contadores para resumen (para que no “adivines” si funcionó)
+APPLIED=0
+SKIPPED_NO_WIP=0
+SKIPPED_NO_SP=0
 
 for profile in "${PROFILES[@]}"; do
   local_base_project="${PROFILE_base_project[$profile]:-${GLOBAL[base_project]:-rx}}"
@@ -267,10 +262,8 @@ for profile in "${PROFILES[@]}"; do
 
   log_info "🧩 Perfil=${profile} subject=${subject} base_project=${local_base_project} base_wip=${local_base_wip} wip_full=${local_wip_full:-N/A}"
 
-  # Reset por perfil
   unset is_write || true
   declare -A is_write
-
   if [[ -n "$local_write" ]]; then
     declare -a write_list
     split_csv "$local_write" write_list
@@ -283,44 +276,53 @@ for profile in "${PROFILES[@]}"; do
     [[ -d "$proj_path" ]] || continue
     proj_name="$(basename "$proj_path")"
 
-    # Línea resumen por proyecto (consola)
-    log_info "📌 Proyecto=${proj_name} (aplicando base + WIP)"
+    log_info "📌 Proyecto=${proj_name} (base + WIP)"
 
+    # base_project
     apply_acl_one "$subject" "$local_base_project" "$proj_path" "false"
-    log_file "OK" "✅ Aplicado base_project: ${profile} ${local_base_project} ${proj_path}"
+    ((APPLIED++))
+    log_ok "📍 base_project: ${profile} ${local_base_project} ${proj_path}"
 
     wip_path="${proj_path}/${WIP_FOLDER}"
     if [[ ! -d "$wip_path" ]]; then
       ((SKIPPED_NO_WIP++))
-      log_warn "WIP no existe (se omite): ${wip_path}"
+      log_warn "📁 WIP no existe (se omite): ${wip_path}"
       continue
     fi
 
+    # base_wip
     apply_acl_one "$subject" "$local_base_wip" "$wip_path" "false"
-    log_file "OK" "✅ Aplicado base_wip: ${profile} ${local_base_wip} ${wip_path}"
+    ((APPLIED++))
+    log_ok "🧷 base_wip: ${profile} ${local_base_wip} ${wip_path}"
 
     if [[ -n "$local_wip_full" ]]; then
       apply_acl_one "$subject" "$local_wip_full" "$wip_path" "true"
-      log_file "OK" "✅ Aplicado wip_full_control: ${profile} ${local_wip_full} ${wip_path} (recursivo)"
+      ((APPLIED++))
+      log_ok "🔓 wip_full_control: ${profile} ${local_wip_full} ${wip_path} (recursivo)"
       continue
     fi
 
     for sp in "${SPECIALTIES[@]}"; do
       sp_path="${wip_path}/${sp}"
-      [[ -e "$sp_path" ]] || { ((SKIPPED_NO_PATH++)); continue; }
+      if [[ ! -e "$sp_path" ]]; then
+        ((SKIPPED_NO_SP++))
+        continue
+      fi
 
       if [[ "${is_write[$sp]+x}" ]]; then
         apply_acl_one "$subject" "rwx" "$sp_path" "true"
-        log_file "OK" "✅ Aplicado WRITE: ${profile} rwx ${sp_path}"
+        ((APPLIED++))
+        log_ok "✍️ WRITE: ${profile} rwx ${sp_path}"
       else
         if [[ "$local_read" == "ALL_EXCEPT_WRITE" ]]; then
           apply_acl_one "$subject" "r-x" "$sp_path" "true"
-          log_file "OK" "✅ Aplicado READ: ${profile} r-x ${sp_path}"
+          ((APPLIED++))
+          log_ok "👀 READ: ${profile} r-x ${sp_path}"
         fi
       fi
     done
   done
 done
 
-log_info "📊 Resumen: APPLIED=${APPLIED} SKIPPED_NO_WIP=${SKIPPED_NO_WIP} SKIPPED_NO_PATH=${SKIPPED_NO_PATH} WARNINGS=${WARNINGS}"
-log_ok "🏁 apply_acls finalizado. Detalle completo en ${LOG_FILE}"
+log_ok "📊 Resumen: APPLIED=${APPLIED} SKIPPED_NO_WIP=${SKIPPED_NO_WIP} SKIPPED_NO_SPECIALTY_PATH=${SKIPPED_NO_SP}"
+log_info "🏁 apply_acls finalizado"
