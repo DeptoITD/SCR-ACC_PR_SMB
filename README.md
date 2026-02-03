@@ -60,7 +60,7 @@ Salida:
 
 ## 5. Uso (flujo operativo controlado)
 
-### 5.1 Backup previo (OBLIGATORIO)
+### 5.1 Validar entorno (OBLIGATORIO)
 
 ```bash
 sudo ./scripts/backup_restore_acl.sh backup \
@@ -68,19 +68,27 @@ sudo ./scripts/backup_restore_acl.sh backup \
   /root/acl_before_$(date +%Y%m%d_%H%M).facl
 ```
 
-### 5.2 Simulación (DRY-RUN)
+### 5.2 Backup previo (OBLIGATORIO)
+
+```bash
+sudo ./scripts/backup_restore_acl.sh backup \
+  /srv/samba/02_Proyectos \
+  /root/acl_before_$(date +%Y%m%d_%H%M).facl
+```
+
+### 5.3 Simulación (DRY-RUN)
 
 ```bash
 sudo DRY_RUN=1 ./scripts/apply_acls.sh
 ```
 
-### 5.3 Ejecución real
+### 5.4 Ejecución real
 
 ```bash
 sudo ./scripts/apply_acls.sh
 ```
 
-### 5.4 Rollback (restauración)
+### 5.5 Rollback (En caso de falla restauración)
 
 ```bash
 sudo ./scripts/backup_restore_acl.sh restore \
