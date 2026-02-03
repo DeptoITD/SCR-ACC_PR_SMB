@@ -5,16 +5,18 @@ set -euo pipefail
 # Backup/Restore de ACLs POSIX.
 #
 # Uso:
-#   sudo ./scripts/backup_restore_acl.sh backup  /srv/samba/02_Proyectos /root/acl_before.facl
-#   sudo ./scripts/backup_restore_acl.sh restore /root/acl_before.facl
-#
-# Notas:
-# - Backup usa getfacl -R --absolute-names para rutas absolutas.
-# - Restore usa setfacl --restore (restaura EXACTAMENTE las rutas dentro del .facl).
-# - Restore es destructivo: sobrescribe ACLs según el archivo.
+#   sudo ./scripts/backup_restore_acl.sh backup  /srv/samba/02_Proyectos
+#   sudo ./scripts/backup_restore_acl.sh backup  /srv/samba/02_Proyectos /ruta/custom.facl
+#   sudo ./scripts/backup_restore_acl.sh restore backups/acl_before_YYYYMMDD_HHMMSS.facl
 #
 # Variables:
 #   FORCE=1   -> omite confirmación en restore.
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BACKUP_DIR="${REPO_DIR}/backups"
+LOG_DIR="${REPO_DIR}/logs"
+mkdir -p "${BACKUP_DIR}" "${LOG_DIR}"
+chmod 750 "${BACKUP_DIR}" "${LOG_DIR}" || true
 
 cmd="${1:-}"
 arg1="${2:-}"
@@ -22,60 +24,57 @@ arg2="${3:-}"
 
 FORCE="${FORCE:-0}"
 
+ts() { date -Is; }
+log() { printf "[%s] %s\n" "$(ts)" "$*" | tee -a "${LOG_DIR}/backup_restore_acl.log" >/dev/null; }
+die() { log "[ERROR] $*"; exit 1; }
+
 case "${cmd}" in
   backup)
     target="${arg1:-}"
     file="${arg2:-}"
 
-    if [[ -z "${target}" || -z "${file}" ]]; then
-      echo "Uso: $0 backup <ruta_objetivo> <archivo_salida.facl>"
-      exit 1
-    fi
+    [[ -n "${target}" ]] || die "Uso: $0 backup <ruta_objetivo> [archivo_salida.facl]"
 
-    if [[ ! -d "${target}" ]]; then
-      echo "[ERROR] Ruta objetivo no existe: ${target}"
-      exit 2
+    [[ -d "${target}" ]] || die "Ruta objetivo no existe: ${target}"
+
+    # Si no te pasan archivo, genera uno en backups/
+    if [[ -z "${file}" ]]; then
+      file="${BACKUP_DIR}/acl_before_$(date +%Y%m%d_%H%M%S).facl"
     fi
 
     # Seguridad básica del archivo resultante
     umask 077
 
-    echo "[BACKUP] Exportando ACLs de: ${target}"
+    log "[BACKUP] Exportando ACLs de: ${target}"
+    log "[BACKUP] Archivo: ${file}"
     getfacl -R --absolute-names "${target}" > "${file}"
-    echo "[OK] Backup generado: ${file}"
+    log "[OK] Backup generado: ${file}"
     ;;
 
   restore)
     file="${arg1:-}"
+    [[ -n "${file}" ]] || die "Uso: $0 restore <archivo_entrada.facl>"
 
-    if [[ -z "${file}" ]]; then
-      echo "Uso: $0 restore <archivo_entrada.facl>"
-      exit 1
-    fi
+    [[ -f "${file}" ]] || die "Archivo .facl no existe: ${file}"
 
-    if [[ ! -f "${file}" ]]; then
-      echo "[ERROR] Archivo .facl no existe: ${file}"
-      exit 2
-    fi
-
-    echo "[RESTORE] Restaurando ACLs desde: ${file}"
-    echo "[WARN] Esto sobrescribirá ACLs de las rutas contenidas en el archivo."
+    log "[RESTORE] Restaurando ACLs desde: ${file}"
+    log "[WARN] Esto sobrescribirá ACLs de las rutas contenidas en el archivo."
 
     if [[ "${FORCE}" != "1" ]]; then
       read -r -p "Escribe 'yes' para continuar: " confirm
       if [[ "${confirm}" != "yes" ]]; then
-        echo "[ABORT] Restore cancelado."
+        log "[ABORT] Restore cancelado."
         exit 0
       fi
     fi
 
     setfacl --restore="${file}"
-    echo "[OK] Restore completado."
+    log "[OK] Restore completado."
     ;;
 
   *)
     echo "Uso:"
-    echo "  $0 backup  <ruta_objetivo> <archivo_salida.facl>"
+    echo "  $0 backup  <ruta_objetivo> [archivo_salida.facl]"
     echo "  $0 restore <archivo_entrada.facl>"
     echo ""
     echo "Opcional: FORCE=1 para omitir confirmación en restore."
