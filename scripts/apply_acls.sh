@@ -33,11 +33,7 @@ _log_line() {
       printf "%s\n" "$line"
       ;;
     compact)
-      if [[ "$level" == "ERROR" || "$level" == "WARN" || "$level" == "OK" ]]; then
-        printf "%s\n" "$line"
-      else
-        printf "%s\n" "$line"
-      fi
+      printf "%s\n" "$line"
       ;;
     *)
       printf "%s\n" "$line"
@@ -111,7 +107,7 @@ warn_if_unknown_subject() {
 
 apply_acl_one() {
   local subject="$1"    # u:NAME o g:NAME
-  local perms="$2"      # rwx, r-x, rx, etc.
+  local perms="$2"      # rwx, r-x, --x, ---, etc.
   local abs_path="$3"
   local recursive="$4"  # true/false
 
@@ -247,7 +243,7 @@ SKIPPED_NO_SP=0
 
 for profile in "${PROFILES[@]}"; do
   local_base_project="${PROFILE_base_project[$profile]:-${GLOBAL[base_project]:-rx}}"
-  local_base_wip="${PROFILE_base_wip[$profile]:-${GLOBAL[base_wip]:-rx}}"
+  local_base_wip="${PROFILE_base_wip[$profile]:-${GLOBAL[base_wip]:-x}}"
   local_wip_full="${PROFILE_wip_full_control[$profile]:-}"
   local_write="${PROFILE_write[$profile]:-}"
   local_read="${PROFILE_read[$profile]:-}"
@@ -273,7 +269,7 @@ for profile in "${PROFILES[@]}"; do
 
     log_info "📌 Proyecto=${proj_name} (base + WIP)"
 
-    # base_project
+    # base_project (puede ver el proyecto)
     apply_acl_one "$subject" "$local_base_project" "$proj_path" "false"
     ((++APPLIED))
     log_ok "📍 base_project: ${profile} ${local_base_project} ${proj_path}"
@@ -285,11 +281,12 @@ for profile in "${PROFILES[@]}"; do
       continue
     fi
 
-    # base_wip
+    # base_wip: solo atravesar, NO listar (x / --x)
     apply_acl_one "$subject" "$local_base_wip" "$wip_path" "false"
     ((++APPLIED))
     log_ok "🧷 base_wip: ${profile} ${local_base_wip} ${wip_path}"
 
+    # BIM: acceso total al WIP (todas las carpetas)
     if [[ -n "$local_wip_full" ]]; then
       apply_acl_one "$subject" "$local_wip_full" "$wip_path" "true"
       ((++APPLIED))
@@ -305,14 +302,16 @@ for profile in "${PROFILES[@]}"; do
       fi
 
       if [[ "${is_write[$sp]+x}" ]]; then
+        # Lo que edita: lectura + escritura + entrar
         apply_acl_one "$subject" "rwx" "$sp_path" "true"
         ((++APPLIED))
         log_ok "✍️ WRITE: ${profile} rwx ${sp_path}"
       else
+        # Lo que NO edita: NO lo ve, NO lo lista
         if [[ "$local_read" == "ALL_EXCEPT_WRITE" ]]; then
-          apply_acl_one "$subject" "r-x" "$sp_path" "true"
+          apply_acl_one "$subject" "---" "$sp_path" "true"
           ((++APPLIED))
-          log_ok "👀 READ: ${profile} r-x ${sp_path}"
+          log_ok "🙈 HIDDEN: ${profile} --- ${sp_path}"
         fi
       fi
     done
