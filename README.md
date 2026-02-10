@@ -25,14 +25,16 @@ El sistema se basa en un **modelo declarativo deny-by-default**, donde los permi
 
 ### Principio de seguridad
 
-> **“Lo que no edita, NO lo ve (ni lo lista, ni le aparece)”**
+> **“Lo que no edita, NO lo ve (ni le aparece en Samba)”**
 
-Este principio se implementa de la siguiente forma:
+Implementación (modelo **DENY-BY-DEFAULT**):
 
-- Solo se otorgan permisos explícitos en carpetas declaradas como editables (`write`).
-- En la carpeta `01_WIP`, los perfiles restringidos reciben únicamente permiso de tránsito (`--x`), sin capacidad de listado.
-- Las carpetas no editables reciben ACL explícita `---`, eliminando permisos residuales.
-- El perfil BIM es la única excepción, con visibilidad total del WIP.
+- En cada proyecto, todos los perfiles pueden **ver y entrar** a `01_WIP` (`base_wip=rx`), para estandarizar navegación.
+- Dentro de `01_WIP`, cada perfil solo tiene permisos **de escritura** (`write`) en las especialidades declaradas.
+- Las especialidades no autorizadas reciben ACL explícita `---` para eliminar permisos residuales y evitar “apariciones”.
+- Para que las carpetas no autorizadas realmente **no aparezcan en el explorador de Windows**, el share de Samba debe tener `hide unreadable = yes`.
+- El perfil BIM es la única excepción con control total sobre todo el WIP (`wip_full_control`).
+
 
 ### Alcance técnico
 
@@ -120,13 +122,24 @@ sudo ./scripts/backup_restore_acl.sh restore / /root/acl_before_YYYYMMDD_HHMM.fa
 
 ```
 SCR-ACLs_SMB/
-├── config/
-│   └── rules.d/
-│       └── acls.ini
-├── scripts/
-│   ├── apply_acls.sh
-│   └── backup_restore_acl.sh
-├── logs/
-│   └── apply_acls.log
-└── README.md
+├── backups
+│   ├── acl_before_20260203_182348.facl
+│   ├── acl_before_20260203_182510.facl
+│   ├── acl_before_20260203_190718.facl
+│   └── acl_before_20260203_192226.facl
+├── BITACORA.md
+├── config
+│   └── acls.ini
+├── docs
+│   └── seq.png
+├── legacy
+│   └── Asignar_permisos.sh
+├── logs
+│   ├── apply_acls.log
+│   └── backup_restore_acl.log
+├── README.md
+└── scripts
+    ├── apply_acls.sh
+    ├── backup_restore_acl.sh
+    └── validate.sh
 ```

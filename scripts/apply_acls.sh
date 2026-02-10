@@ -6,19 +6,16 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # -------------------------
 # Config base
 # -------------------------
-INI_FILE="${INI_FILE:-${REPO_DIR}/config/rules.d/acls.ini}"
+# FIX 1: ruta real del INI según tu repo (config/acls.ini)
+INI_FILE="${INI_FILE:-${REPO_DIR}/config/acls.ini}"
+
 LOG_DIR="${REPO_DIR}/logs"
 LOG_FILE="${LOG_DIR}/apply_acls.log"
 mkdir -p "${LOG_DIR}"
 
 DRY_RUN="${DRY_RUN:-0}"
 CONSOLE_MODE="${CONSOLE_MODE:-compact}"     # compact | verbose
-
-# Defaults en dirs NO recursivos:
-# OJO: en ROOT/PROYECTO/WIP NO queremos defaults heredables que generen "apariciones".
-DEFAULT_ON_ROOT_DIR="${DEFAULT_ON_ROOT_DIR:-0}"
-DEFAULT_ON_PROJECT_DIR="${DEFAULT_ON_PROJECT_DIR:-0}"
-DEFAULT_ON_WIP_DIR="${DEFAULT_ON_WIP_DIR:-0}"
+DEFAULT_ON_NONRECURSIVE_DIRS="${DEFAULT_ON_NONRECURSIVE_DIRS:-1}"
 
 # Si quieres velocidad en árboles enormes, pon SIMPLE_RECURSIVE=1 para usar setfacl -R
 # (por defecto hacemos find para separar dir/file y no meter 'x' en archivos)
@@ -93,13 +90,12 @@ warn_if_unknown_subject() {
   fi
 }
 
-# Non-recursive, con control de default ACL
 apply_acl_nonrec() {
-  local subject="$1" perms="$2" path="$3" set_default="${4:-0}"
+  local subject="$1" perms="$2" path="$3"
   local kind="${subject%%:*}" name="${subject#*:}"
 
   run_cmd setfacl -m "${kind}:${name}:${perms}" "${path}"
-  if [[ -d "${path}" && "${set_default}" == "1" ]]; then
+  if [[ -d "${path}" && "${DEFAULT_ON_NONRECURSIVE_DIRS}" == "1" ]]; then
     run_cmd setfacl -d -m "${kind}:${name}:${perms}" "${path}"
   fi
 }
@@ -117,6 +113,7 @@ apply_acl_tree_split() {
     return 0
   fi
 
+  # -xdev evita cruzar otros mounts; -P evita seguir symlinks
   find -P "${path}" -xdev -type d -exec setfacl -m "${kind}:${name}:${dir_perms}" {} +
   find -P "${path}" -xdev -type d -exec setfacl -d -m "${kind}:${name}:${def_dir}" {} +
 
@@ -133,7 +130,7 @@ apply_acl_tree_simple() {
   run_cmd setfacl -R -d -m "${kind}:${name}:${perms}" "${path}"
 }
 
-# Deny explícito recursivo (para invisibilidad en Samba con hide unreadable)
+# Deny explícito recursivo (para invisibilidad vía Samba)
 apply_deny_tree() {
   local subject="$1" path="$2"
 
@@ -150,7 +147,6 @@ apply_deny_tree() {
 declare -A GLOBAL
 declare -a SPECIALTIES
 
-declare -A PROFILE_base_root
 declare -A PROFILE_base_project
 declare -A PROFILE_base_wip
 declare -A PROFILE_wip_full_control
@@ -191,7 +187,6 @@ parse_ini() {
         GLOBAL["$key"]="$val"
       else
         case "$key" in
-          base_root)        PROFILE_base_root["$section"]="$val" ;;
           base_project)     PROFILE_base_project["$section"]="$val" ;;
           base_wip)         PROFILE_base_wip["$section"]="$val" ;;
           wip_full_control) PROFILE_wip_full_control["$section"]="$val" ;;
@@ -250,7 +245,6 @@ EXPECTED_ROOT="/srv/samba/02_Proyectos"
 # Perfiles (secciones encontradas)
 declare -a PROFILES
 for p in \
-  "${!PROFILE_base_root[@]}" \
   "${!PROFILE_base_project[@]}" \
   "${!PROFILE_base_wip[@]}" \
   "${!PROFILE_wip_full_control[@]}" \
@@ -259,7 +253,7 @@ do
   PROFILES+=("$p")
 done
 mapfile -t PROFILES < <(printf "%s\n" "${PROFILES[@]}" | awk '!seen[$0]++' | sort)
-[[ "${#PROFILES[@]}" -gt 0 ]] || die "No hay perfiles en el INI (secciones tipo [g:Perfil] o [u:Usuario])"
+[[ "${#PROFILES[@]}" -gt 0 ]] || die "No hay perfiles en el INI"
 
 # Proyectos existentes
 shopt -s nullglob
@@ -276,7 +270,6 @@ SKIPPED_NO_WIP=0
 SKIPPED_NO_SP=0
 
 for profile in "${PROFILES[@]}"; do
-  base_root="${PROFILE_base_root[$profile]:-${BASE_ROOT_DEFAULT}}"
   base_project="${PROFILE_base_project[$profile]:-${BASE_PROJECT_DEFAULT}}"
   base_wip="${PROFILE_base_wip[$profile]:-${BASE_WIP_DEFAULT}}"
   wip_full="${PROFILE_wip_full_control[$profile]:-}"
@@ -285,10 +278,15 @@ for profile in "${PROFILES[@]}"; do
   subject="$(resolve_acl_subject "$profile")"
   warn_if_unknown_subject "$profile" "$subject"
 
-  log_info "🧩 Perfil=${profile} subject=${subject} base_root=${base_root} base_project=${base_project} base_wip=${base_wip} wip_full=${wip_full:-N/A}"
+  log_info "🧩 Perfil=${profile} subject=${subject} base_root=${BASE_ROOT_DEFAULT} base_project=${base_project} base_wip=${base_wip} wip_full=${wip_full:-N/A}"
+
+  # FIX 2: dar permisos en el ROOT del share para listar proyectos
+  apply_acl_nonrec "$subject" "${BASE_ROOT_DEFAULT}" "$ROOT"
+  ((++APPLIED))
+  log_ok "📍 base_root: ${profile} ${BASE_ROOT_DEFAULT} ${ROOT}"
 
   # build write set
-  unset is_write 2>/dev/null || true
+  unset -v is_write 2>/dev/null || true
   declare -A is_write
   if [[ -n "${write_csv}" ]]; then
     declare -a write_list
@@ -298,20 +296,15 @@ for profile in "${PROFILES[@]}"; do
     done
   fi
 
-  # ROOT: listar proyectos (sin defaults heredables)
-  apply_acl_nonrec "$subject" "$base_root" "$ROOT" "${DEFAULT_ON_ROOT_DIR}"
-  ((++APPLIED))
-  log_ok "🌳 base_root: ${profile} ${base_root} ${ROOT}"
-
   for proj_path in "${PROJECT_PATHS[@]}"; do
     [[ -d "$proj_path" ]] || continue
     proj_name="$(basename "$proj_path")"
     wip_path="${proj_path}/${WIP_FOLDER}"
 
-    log_info "📌 Proyecto=${proj_name}"
+    log_info "📌 Proyecto=${proj_name} (base + WIP)"
 
-    # base_project (sin defaults heredables por defecto)
-    apply_acl_nonrec "$subject" "$base_project" "$proj_path" "${DEFAULT_ON_PROJECT_DIR}"
+    # base_project: listar y entrar al proyecto
+    apply_acl_nonrec "$subject" "$base_project" "$proj_path"
     ((++APPLIED))
     log_ok "📍 base_project: ${profile} ${base_project} ${proj_path}"
 
@@ -322,8 +315,8 @@ for profile in "${PROFILES[@]}"; do
       continue
     fi
 
-    # base_wip (sin defaults heredables por defecto)
-    apply_acl_nonrec "$subject" "$base_wip" "$wip_path" "${DEFAULT_ON_WIP_DIR}"
+    # base_wip: que todos "vean WIP" (listar y entrar)
+    apply_acl_nonrec "$subject" "$base_wip" "$wip_path"
     ((++APPLIED))
     log_ok "🧷 base_wip: ${profile} ${base_wip} ${wip_path}"
 
