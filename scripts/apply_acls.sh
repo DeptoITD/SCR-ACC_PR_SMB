@@ -13,7 +13,6 @@ LOG_FILE="${LOG_DIR}/apply_acls.log"
 mkdir -p "${LOG_DIR}"
 
 DRY_RUN="${DRY_RUN:-0}"
-CONSOLE_MODE="${CONSOLE_MODE:-compact}"     # compact | verbose
 DEFAULT_ON_NONRECURSIVE_DIRS="${DEFAULT_ON_NONRECURSIVE_DIRS:-1}"
 
 # Si quieres velocidad en árboles enormes, pon SIMPLE_RECURSIVE=1 para usar setfacl -R
@@ -46,6 +45,7 @@ trap 'rc=$?; log_err "💥 Abortado (exit=$rc) en línea ${LINENO}: ${BASH_COMMA
 # -------------------------
 trim() {
   local s="$1"
+  s="${s//$'\r'/}"                # mata CRLF de Windows
   s="${s#"${s%%[![:space:]]*}"}"
   s="${s%"${s##*[![:space:]]}"}"
   printf "%s" "$s"
@@ -55,6 +55,36 @@ run_cmd() {
   log_info "🧾 [CMD] $*"
   [[ "${DRY_RUN}" == "1" ]] && return 0
   "$@"
+}
+
+# Normaliza permisos a formato POSIX ACL (3 chars)
+# - "rx"  -> "r-x"
+# - "rw"  -> "rw-"
+# - "r"   -> "r--"
+# - "--x" -> "--x" (ya OK)
+# - "rwx" -> "rwx"
+normalize_perms() {
+  local p
+  p="$(trim "$1")"
+
+  # Si ya viene con 3 chars tipo r-x / rw- / --- / --x etc.
+  if [[ "$p" =~ ^[r-][w-][x-]$ ]]; then
+    printf "%s" "$p"
+    return 0
+  fi
+
+  # Si viene abreviado (ej: rx, rw, r, x)
+  local r="-" w="-" x="-"
+  [[ "$p" == *"r"* ]] && r="r"
+  [[ "$p" == *"w"* ]] && w="w"
+  [[ "$p" == *"x"* ]] && x="x"
+
+  local out="${r}${w}${x}"
+  if [[ ! "$out" =~ ^[r-][w-][x-]$ ]]; then
+    die "Permisos inválidos: '$p' (normalizado: '$out')"
+  fi
+
+  printf "%s" "$out"
 }
 
 resolve_acl_subject() {
@@ -92,10 +122,14 @@ warn_if_unknown_subject() {
 }
 
 apply_acl_nonrec() {
-  local subject="$1" perms="$2" path="$3"
+  local subject="$1" perms_raw="$2" path="$3"
   local kind="${subject%%:*}" name="${subject#*:}"
+  local perms
+  perms="$(normalize_perms "$perms_raw")"
 
   run_cmd setfacl -m "${kind}:${name}:${perms}" "${path}"
+
+  # Default ACL solo aplica a directorios
   if [[ -d "${path}" && "${DEFAULT_ON_NONRECURSIVE_DIRS}" == "1" ]]; then
     run_cmd setfacl -d -m "${kind}:${name}:${perms}" "${path}"
   fi
@@ -103,8 +137,12 @@ apply_acl_nonrec() {
 
 # Aplica ACL recursivo separando dirs y files (DEFAULT solo en DIRS)
 apply_acl_tree_split() {
-  local subject="$1" dir_perms="$2" file_perms="$3" def_dir="$4" path="$5"
+  local subject="$1" dir_perms_raw="$2" file_perms_raw="$3" def_dir_raw="$4" path="$5"
   local kind="${subject%%:*}" name="${subject#*:}"
+  local dir_perms file_perms def_dir
+  dir_perms="$(normalize_perms "$dir_perms_raw")"
+  file_perms="$(normalize_perms "$file_perms_raw")"
+  def_dir="$(normalize_perms "$def_dir_raw")"
 
   if [[ "${DRY_RUN}" == "1" ]]; then
     log_info "🧾 [CMD] find '${path}' -type d -exec setfacl -m ${kind}:${name}:${dir_perms} {} +"
@@ -120,10 +158,14 @@ apply_acl_tree_split() {
 
 # Recursivo simple (rápido, menos fino)
 apply_acl_tree_simple() {
-  local subject="$1" perms="$2" path="$3"
+  local subject="$1" perms_raw="$2" path="$3"
   local kind="${subject%%:*}" name="${subject#*:}"
+  local perms
+  perms="$(normalize_perms "$perms_raw")"
 
   run_cmd setfacl -R -m "${kind}:${name}:${perms}" "${path}"
+  # Default ACL (solo en directorios): setfacl -R -d lo intenta sobre archivos también y puede avisar.
+  # En SIMPLE_RECURSIVE aceptamos ese tradeoff.
   run_cmd setfacl -R -d -m "${kind}:${name}:${perms}" "${path}"
 }
 
@@ -161,6 +203,7 @@ parse_ini() {
 
     if [[ "$line" =~ ^\[(.+)\]$ ]]; then
       section="${BASH_REMATCH[1]}"
+      section="$(trim "$section")"
       continue
     fi
 
@@ -235,6 +278,7 @@ HIDE_NON_WRITE="${GLOBAL[hide_non_write]:-1}"
 EXPECTED_ROOT="/srv/samba/02_Proyectos"
 [[ "${ROOT}" == "${EXPECTED_ROOT}" ]] || die "ROOT='${ROOT}' no coincide con EXPECTED_ROOT='${EXPECTED_ROOT}'. Abortando."
 
+# Perfiles (secciones encontradas)
 declare -a PROFILES
 for p in \
   "${!PROFILE_base_project[@]}" \
@@ -247,6 +291,7 @@ done
 mapfile -t PROFILES < <(printf "%s\n" "${PROFILES[@]}" | awk '!seen[$0]++' | sort)
 [[ "${#PROFILES[@]}" -gt 0 ]] || die "No hay perfiles en el INI"
 
+# Proyectos existentes
 shopt -s nullglob
 # shellcheck disable=SC2206
 PROJECT_PATHS=( ${ROOT}/${PROJECT_GLOB} )
@@ -271,10 +316,12 @@ for profile in "${PROFILES[@]}"; do
 
   log_info "🧩 Perfil=${profile} subject=${subject} base_root=${BASE_ROOT_DEFAULT} base_project=${base_project} base_wip=${base_wip} wip_full=${wip_full:-N/A}"
 
+  # base_root: listar proyectos en el root del share
   apply_acl_nonrec "$subject" "${BASE_ROOT_DEFAULT}" "$ROOT"
   ((++APPLIED))
   log_ok "📍 base_root: ${profile} ${BASE_ROOT_DEFAULT} ${ROOT}"
 
+  # build write set
   unset -v is_write 2>/dev/null || true
   declare -A is_write
   if [[ -n "${write_csv}" ]]; then
@@ -287,24 +334,26 @@ for profile in "${PROFILES[@]}"; do
 
   for proj_path in "${PROJECT_PATHS[@]}"; do
     [[ -d "$proj_path" ]] || continue
-    proj_name="$(basename "$proj_path")"
     wip_path="${proj_path}/${WIP_FOLDER}"
 
+    # base_project: listar y entrar al proyecto
     apply_acl_nonrec "$subject" "$base_project" "$proj_path"
     ((++APPLIED))
     log_ok "📍 base_project: ${profile} ${base_project} ${proj_path}"
 
+    # WIP existe?
     if [[ ! -d "$wip_path" ]]; then
       ((++SKIPPED_NO_WIP))
       log_warn "📁 WIP no existe (se omite): ${wip_path}"
       continue
     fi
 
-    # 🔥 Aquí está la diferencia: base_wip=rx para que Windows pueda entrar
+    # base_wip: permitir entrar/listar WIP
     apply_acl_nonrec "$subject" "$base_wip" "$wip_path"
     ((++APPLIED))
     log_ok "🧷 base_wip: ${profile} ${base_wip} ${wip_path}"
 
+    # BIM full control
     if [[ -n "$wip_full" ]]; then
       if [[ "${SIMPLE_RECURSIVE}" == "1" ]]; then
         apply_acl_tree_simple "$subject" "$wip_full" "$wip_path"
@@ -316,6 +365,7 @@ for profile in "${PROFILES[@]}"; do
       continue
     fi
 
+    # Perfiles restringidos: write vs deny por especialidad
     for sp in "${SPECIALTIES[@]}"; do
       sp_path="${wip_path}/${sp}"
       [[ -e "$sp_path" ]] || { ((++SKIPPED_NO_SP)); continue; }
